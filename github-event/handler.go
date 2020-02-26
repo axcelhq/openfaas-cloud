@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 
 	"github.com/alexellis/hmac"
 	"github.com/openfaas/openfaas-cloud/sdk"
@@ -20,37 +21,9 @@ const Source = "github-event"
 
 var audit sdk.Audit
 
-type GarbageRequest struct {
-	Functions []string `json:"functions"`
-	Repo      string   `json:"repo"`
-	Owner     string   `json:"owner"`
-}
-
-type InstallationRepositoriesEvent struct {
-	Action       string `json:"action"`
-	Installation struct {
-		Account struct {
-			Login string
-		}
-	} `json:"installation"`
-	RepositoriesRemoved []Installation `json:"repositories_removed"`
-	RepositoriesAdded   []Installation `json:"repositories_added"`
-	Repositories        []Installation `json:"repositories"`
-}
-
-type Installation struct {
-	Name     string `json:"name"`
-	FullName string `json:"full_name"`
-}
-
 // Handle receives events from the GitHub app and checks the origin via
 // HMAC. Valid events are push or installation events.
 func Handle(req []byte) string {
-	customersPath := os.Getenv("customers_path")
-	customersURL := os.Getenv("customers_url")
-
-	customers := sdk.NewCustomers(customersPath, customersURL)
-	customers.Fetch()
 
 	queryVal := os.Getenv("Http_Query")
 	if values, err := url.ParseQuery(queryVal); err == nil {
@@ -92,12 +65,12 @@ func Handle(req []byte) string {
 
 	if eventHeader == "push" {
 		if sdk.ValidateCustomers() {
-			err := validateCustomers(&customer, customers)
+			customersURL := os.Getenv("customers_url")
+			err := validateCustomers(&customer, customersURL)
 			if err != nil {
 				return err.Error()
 			}
 		}
-
 		if sdk.HmacEnabled() {
 			webhookSecretKey, secretErr := sdk.ReadSecret("github-webhook-secret")
 			if secretErr != nil {
@@ -140,6 +113,7 @@ func Handle(req []byte) string {
 		}
 
 		if sdk.ValidateCustomers() {
+			customersURL := os.Getenv("customers_url")
 			customer := sdk.PushEvent{
 				Repository: sdk.PushEventRepository{
 					Owner: sdk.Owner{
@@ -148,12 +122,11 @@ func Handle(req []byte) string {
 				},
 			}
 
-			err := validateCustomers(&customer, customers)
+			err := validateCustomers(&customer, customersURL)
 			if err != nil {
 				return err.Error()
 			}
 		}
-
 		if sdk.HmacEnabled() {
 			webhookSecretKey, secretErr := sdk.ReadSecret("github-webhook-secret")
 			if secretErr != nil {
@@ -228,33 +201,6 @@ func Handle(req []byte) string {
 	return fmt.Sprintf("Message received with event: %s", eventHeader)
 }
 
-func validateCustomers(pushEvent *sdk.PushEvent, customers *sdk.Customers) error {
-	owner := pushEvent.Repository.Owner.Login
-
-	notFound := fmt.Errorf("Customer: %q not found in customers ACL", owner)
-
-	found1, err1 := customers.Get(owner)
-	fmt.Println(owner, found1, err1)
-
-	if found, err := customers.Get(owner); found == false || err != nil {
-
-		if err != nil {
-			log.Printf("Error getting customer: %s, %s", owner, err.Error())
-		}
-
-		auditEvent := sdk.AuditEvent{
-			Message: "Customer not found",
-			Owner:   owner,
-			Source:  Source,
-		}
-
-		sdk.PostAudit(auditEvent)
-		return notFound
-	}
-
-	return nil
-}
-
 func garbageCollect(garbageRequests []GarbageRequest) error {
 
 	gatewayURL := os.Getenv("gateway_url")
@@ -287,6 +233,29 @@ func garbageCollect(garbageRequests []GarbageRequest) error {
 		}
 	}
 	return nil
+}
+
+type GarbageRequest struct {
+	Functions []string `json:"functions"`
+	Repo      string   `json:"repo"`
+	Owner     string   `json:"owner"`
+}
+
+type InstallationRepositoriesEvent struct {
+	Action       string `json:"action"`
+	Installation struct {
+		Account struct {
+			Login string
+		}
+	} `json:"installation"`
+	RepositoriesRemoved []Installation `json:"repositories_removed"`
+	RepositoriesAdded   []Installation `json:"repositories_added"`
+	Repositories        []Installation `json:"repositories"`
+}
+
+type Installation struct {
+	Name     string `json:"name"`
+	FullName string `json:"full_name"`
 }
 
 func forward(req []byte, function string, headers map[string]string) (string, int, error) {
@@ -327,9 +296,78 @@ func forward(req []byte, function string, headers map[string]string) (string, in
 	return string(body), res.StatusCode, err
 }
 
+func validCustomer(owner string) (bool, error) {
+	// customer control is paased to git-tar
+	fmt.Println(owner)
+	return true, nil
+
+}
+
+// getCustomers reads a list of customers separated by new lines
+// who are valid users of OpenFaaS cloud
+func getCustomers(customerURL string) ([]string, error) {
+	customers := []string{}
+
+	if len(customerURL) == 0 {
+		return nil, fmt.Errorf("customerURL was nil")
+	}
+
+	httpReq, reqErr := http.NewRequest(http.MethodGet, customerURL, nil)
+	if reqErr != nil {
+		return nil, fmt.Errorf("Error while making the request to `%s` : %s", customerURL, reqErr.Error())
+	}
+
+	res, reqErr := http.DefaultClient.Do(httpReq)
+	if reqErr != nil {
+		return nil, fmt.Errorf("Error while requesting customers: %s", reqErr.Error())
+	}
+
+	if res.Body != nil {
+		defer res.Body.Close()
+
+		pageBody, readErr := ioutil.ReadAll(res.Body)
+		if readErr != nil {
+			return nil, fmt.Errorf("Error while reading response body for customers: %s", readErr)
+		}
+
+		customers = strings.Split(string(pageBody), "\n")
+
+		for customer, client := range customers {
+			customers[customer] = strings.ToLower(strings.TrimSuffix(client, "\r"))
+		}
+	}
+
+	return customers, nil
+}
+
 func readBool(key string) bool {
 	if val, exists := os.LookupEnv(key); exists {
 		return val == "true" || val == "1"
 	}
 	return false
+}
+
+func validateCustomers(pushEvent *sdk.PushEvent, customersURL string) error {
+
+	fmt.Sprintf(customersURL)
+	actor := pushEvent.Repository.Owner.Login
+	isCustomer, err := validCustomer(actor)
+	if err != nil {
+		return fmt.Errorf("Validation failed: %s", err)
+	}
+	if !isCustomer {
+
+		auditEvent := sdk.AuditEvent{
+			Message: "Customer not found",
+			Owner:   actor,
+			Source:  Source,
+		}
+
+		sdk.PostAudit(auditEvent)
+
+		return fmt.Errorf("%s",
+			fmt.Sprintf("Customer: %s not found in CUSTOMERS file via %t", actor,
+				isCustomer))
+	}
+	return nil
 }

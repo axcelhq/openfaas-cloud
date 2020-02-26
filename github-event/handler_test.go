@@ -1,3 +1,4 @@
+// test needs to be fixed to accomodate changes in the handler - marami52
 package function
 
 import (

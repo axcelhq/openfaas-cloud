@@ -2,6 +2,7 @@ template/**
 build
 .vscode
 .idea
+.c9
 image
 *.pem
 

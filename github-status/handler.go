@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/alexellis/derek/auth"
@@ -116,6 +117,60 @@ func getLogs(status *sdk.CommitStatus, event *sdk.Event) (string, error) {
 		return "", err
 	}
 	return string(responsePayload), nil
+}
+
+func buildPublicStatusURL(status string, statusContext string, event *sdk.Event) string {
+	axcelURL := os.Getenv("axcel_url")
+	url := event.URL
+
+	if status == sdk.StatusSuccess {
+		publicURL := os.Getenv("gateway_public_url")
+		gatewayPrettyURL := os.Getenv("gateway_pretty_url")
+		if statusContext != sdk.StackContext {
+			if len(gatewayPrettyURL) > 0 {
+				// https://user.get-faas.com/function
+				url = strings.Replace(gatewayPrettyURL, "user", event.Owner, 1)
+				url = strings.Replace(url, "function", event.Service, 1)
+			} else if len(publicURL) > 0 {
+				if strings.HasSuffix(publicURL, "/") == false {
+					publicURL = publicURL + "/"
+				}
+				// for success status if gateway's public url id set the deployed
+				// function url is used in the commit status
+				// All links go to Axcel Dashboard
+				// serviceValue := sdk.FormatServiceName(event.Owner, event.Service)
+				url = axcelURL
+			}
+		} else { // For context Stack on success the gateway url is used
+			if len(gatewayPrettyURL) > 0 {
+				// https://user.get-faas.com/function
+				url = strings.Replace(gatewayPrettyURL, "user", event.Owner, 1)
+				url = strings.Replace(url, "function", "", 1)
+			} else if len(publicURL) > 0 {
+				if strings.HasSuffix(publicURL, "/") == false {
+					publicURL = publicURL + "/"
+				}
+				url = publicURL
+			}
+		}
+	} else if status == sdk.StatusFailure {
+		publicURL := os.Getenv("gateway_public_url")
+		gatewayPrettyURL := os.Getenv("gateway_pretty_url")
+
+		if len(gatewayPrettyURL) > 0 {
+			url = strings.Replace(gatewayPrettyURL, "user", "system", 1)
+			url = strings.Replace(url, "function", "dashboard", 1)
+
+		} else if len(publicURL) > 0 {
+			if strings.HasSuffix(publicURL, "/") == false {
+				publicURL = publicURL + "/"
+			}
+			url = publicURL + "/function/system-dashboard"
+		}
+		url += "/" + event.Owner + "/" + event.Service + "/log?repoPath=" + event.Owner + "/" + event.Repository + "&commitSHA=" + event.SHA
+	}
+	// all links to Axcel dashboard
+	return axcelURL
 }
 
 func reportToGithub(commitStatus *sdk.CommitStatus, event *sdk.Event) error {
@@ -246,7 +301,7 @@ func getCheckRunTitle(status *sdk.CommitStatus) *string {
 	title := status.Description
 	switch status.Context {
 	case sdk.StackContext:
-		title = "Deploy to OpenFaaS"
+		title = "Deploy to Axcel"
 	default: // Assuming status is either a function name (building) or stack deploy
 		title = fmt.Sprintf("Build %s", status.Context)
 	}
